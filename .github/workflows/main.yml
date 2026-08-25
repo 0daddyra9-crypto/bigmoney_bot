@@ -2,20 +2,19 @@ name: 실전 주도주 동적 스크리닝 봇
 
 on:
   schedule:
-    # 한국 시간(Asia/Seoul) 기준, 평일(월~금) 지정 시간마다 알림
-    - cron: '30 8 * * 1-5'  # 오전 08:30 (장 시작 전)
+    - cron: '30 8 * * 1-5'
       timezone: 'Asia/Seoul'
-    - cron: '0 10 * * 1-5'  # 오전 10:00
+    - cron: '0 10 * * 1-5'
       timezone: 'Asia/Seoul'
-    - cron: '0 12 * * 1-5'  # 정오 12:00
+    - cron: '0 12 * * 1-5'
       timezone: 'Asia/Seoul'
-    - cron: '0 14 * * 1-5'  # 오후 14:00
+    - cron: '0 14 * * 1-5'
       timezone: 'Asia/Seoul'
-    - cron: '0 15 * * 1-5'  # 오후 15:00
+    - cron: '0 15 * * 1-5'
       timezone: 'Asia/Seoul'
-    - cron: '0 16 * * 1-5'  # 오후 16:00 (장 종료 후 리뷰)
+    - cron: '0 16 * * 1-5'
       timezone: 'Asia/Seoul'
-  workflow_dispatch: # 내가 원할 때 수동으로 즉시 실행하는 버튼 활성화
+  workflow_dispatch:
 
 jobs:
   run-quant-bot:
@@ -30,11 +29,12 @@ jobs:
         run: pip install yfinance pandas requests beautifulsoup4 pytz
         
       - name: 스크리닝 알고리즘 실행
-        env: # 아까 만든 비밀 금고에서 토큰과 ID를 꺼내옵니다.
+        env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+        # 따옴표 에러를 방지하는 실전형 파일 생성(EOF) 문법 적용
         run: |
-          python -c "
+          cat << 'EOF' > bot.py
           import yfinance as yf
           import pandas as pd
           import requests
@@ -47,11 +47,11 @@ jobs:
           CHAT_ID = os.getenv('CHAT_ID')
 
           def send_telegram_message(message):
-              url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+              url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
               requests.post(url, json={'chat_id': CHAT_ID, 'text': message})
 
           def get_realtime_hot_stocks():
-              url = 'https://finance.naver.com/sise/sise_quant.naver'
+              url = "https://finance.naver.com/sise/sise_quant.naver"
               headers = {'User-Agent': 'Mozilla/5.0'}
               res = requests.get(url, headers=headers)
               soup = BeautifulSoup(res.text, 'html.parser')
@@ -66,17 +66,17 @@ jobs:
 
           def analyze_dynamic_trend():
               now = datetime.now(pytz.timezone('Asia/Seoul'))
-              msg = f'🎯 [스탁이지 AI] {now.strftime('%H:%M')} 실시간 주도주 동적 포착\n\n'
+              msg = f"🎯 [스탁이지 AI] {now.strftime('%H:%M')} 실시간 주도주 동적 포착\n\n"
               hot_stocks = get_realtime_hot_stocks()
               for code, name in hot_stocks.items():
                   try:
-                      ticker = f'{code}.KS'
+                      ticker = f"{code}.KS"
                       stock = yf.Ticker(ticker)
-                      df = stock.history(period='6mo')
+                      df = stock.history(period="6mo")
                       if df.empty:
-                          ticker = f'{code}.KQ'
+                          ticker = f"{code}.KQ"
                           stock = yf.Ticker(ticker)
-                          df = stock.history(period='6mo')
+                          df = stock.history(period="6mo")
                       if len(df) < 60: continue
                       
                       df['MA20'] = df['Close'].rolling(window=20).mean()
@@ -91,9 +91,10 @@ jobs:
                       elif current_price < ma60: status = '🔴 [청산] 60일선 완전 이탈'
                       else: status = '⚪ [관망] 박스권 거래량 급증'
                           
-                      msg += f'🔥 {name}\n ├ 현재가: {current_price:,.0f}원\n └ {status}\n\n'
+                      msg += f"🔥 {name}\n ├ 현재가: {current_price:,.0f}원\n └ {status}\n\n"
                   except: continue
               return msg
 
           send_telegram_message(analyze_dynamic_trend())
-          "
+          EOF
+          python bot.py
