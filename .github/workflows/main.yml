@@ -1,23 +1,15 @@
-name: 실전 주도주 동적 스크리닝 봇
+name: 스탁이지 V3.0 전 섹터 동적 스크리닝 봇
 
 on:
   schedule:
-    - cron: '30 8 * * 1-5'
+    - cron: '30 8 * * 1-5'  # 오전 08:30
       timezone: 'Asia/Seoul'
-    - cron: '0 10 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '0 12 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '0 14 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '0 15 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '0 16 * * 1-5'
+    - cron: '0 15 * * 1-5'  # 오후 15:00 (장 마감 후)
       timezone: 'Asia/Seoul'
   workflow_dispatch:
 
 jobs:
-  run-quant-bot:
+  run-dynamic-quant-bot:
     runs-on: ubuntu-latest
     steps:
       - name: 파이썬 환경 세팅
@@ -28,13 +20,12 @@ jobs:
       - name: 필수 라이브러리 설치
         run: pip install yfinance pandas requests beautifulsoup4 pytz
         
-      - name: 스크리닝 알고리즘 실행
+      - name: 전 섹터 동적 스크리닝 알고리즘 실행
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        # 따옴표 에러를 방지하는 실전형 파일 생성(EOF) 문법 적용
         run: |
-          cat << 'EOF' > bot.py
+          cat << 'EOF' > bot_v3.py
           import yfinance as yf
           import pandas as pd
           import requests
@@ -50,34 +41,58 @@ jobs:
               url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
               requests.post(url, json={'chat_id': CHAT_ID, 'text': message})
 
-          def get_realtime_hot_stocks():
-              url = "https://finance.naver.com/sise/sise_quant.naver"
-              headers = {'User-Agent': 'Mozilla/5.0'}
-              res = requests.get(url, headers=headers)
-              soup = BeautifulSoup(res.text, 'html.parser')
-              hot_stocks = {}
-              for row in soup.select('table.type_2 tbody tr'):
-                  a_tag = row.select_one('a.tltle')
-                  if a_tag and len(hot_stocks) < 5:
-                      name = a_tag.text
-                      code = a_tag['href'].split('code=')[-1]
-                      hot_stocks[code] = name
-              return hot_stocks
-
-          def analyze_dynamic_trend():
-              now = datetime.now(pytz.timezone('Asia/Seoul'))
-              msg = f"🎯 [스탁이지 AI] {now.strftime('%H:%M')} 실시간 주도주 동적 포착\n\n"
-              hot_stocks = get_realtime_hot_stocks()
-              for code, name in hot_stocks.items():
+          def get_dynamic_all_market_stocks():
+              """코스피/코스닥 전 섹터를 아우르는 거래대금 상위 100개 종목 동적 추출"""
+              target_stocks = {}
+              urls = [
+                  ("https://finance.naver.com/sise/sise_quant.naver?sosok=0", ".KS", 50), # 코스피 상위 50
+                  ("https://finance.naver.com/sise/sise_quant.naver?sosok=1", ".KQ", 50)  # 코스닥 상위 50
+              ]
+              
+              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+              
+              for url, suffix, limit in urls:
                   try:
-                      ticker = f"{code}.KS"
+                      res = requests.get(url, headers=headers, timeout=5)
+                      soup = BeautifulSoup(res.text, 'html.parser')
+                      count = 0
+                      
+                      for row in soup.select('table.type_2 tbody tr'):
+                          a_tag = row.select_one('a.tltle')
+                          if a_tag:
+                              name = a_tag.text.strip()
+                              code = a_tag['href'].split('code=')[-1]
+                              ticker = f"{code}{suffix}"
+                              target_stocks[ticker] = name
+                              count += 1
+                              if count >= limit:
+                                  break
+                  except Exception as e:
+                      print(f"크롤링 주의 ({suffix}): {e}")
+                      
+              # 만약 외부 크롤링 차단 시 시스템이 멈추지 않도록 핵심 대장주 백업 풀 자동 병합
+              if len(target_stocks) < 10:
+                  backup_pool = {
+                      "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", "278470.KS": "에이피알", 
+                      "257720.KQ": "실리콘투", "196170.KQ": "알테오젠", "042700.KS": "한미반도체",
+                      "277810.KQ": "레인보우로보틱스", "068270.KS": "셀트리온", "005380.KS": "현대차"
+                  }
+                  target_stocks.update(backup_pool)
+                  
+              return target_stocks
+
+          def analyze_all_sectors():
+              now = datetime.now(pytz.timezone('Asia/Seoul'))
+              stock_pool = get_dynamic_all_market_stocks()
+              msg = f"🌐 [스탁이지 V3.0] 전 섹터 동적 스크리닝 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n탐색 종목: 총 {len(stock_pool)}개\n\n"
+              
+              signal_count = 0
+              
+              for ticker, name in stock_pool.items():
+                  try:
                       stock = yf.Ticker(ticker)
-                      df = stock.history(period="6mo")
-                      if df.empty:
-                          ticker = f"{code}.KQ"
-                          stock = yf.Ticker(ticker)
-                          df = stock.history(period="6mo")
-                      if len(df) < 60: continue
+                      df = stock.history(period="3mo")
+                      if df.empty or len(df) < 50: continue
                       
                       df['MA20'] = df['Close'].rolling(window=20).mean()
                       df['MA60'] = df['Close'].rolling(window=60).mean()
@@ -86,15 +101,24 @@ jobs:
                       ma20 = df.iloc[-1]['MA20']
                       ma60 = df.iloc[-1]['MA60']
                       
-                      if current_price > ma20 and ma20 > ma60: status = '🟢 [진입] 거래량 폭발+정배열'
-                      elif current_price < ma20 and current_price > ma60: status = '🟡 [주의] 20일선 이탈'
-                      elif current_price < ma60: status = '🔴 [청산] 60일선 완전 이탈'
-                      else: status = '⚪ [관망] 박스권 거래량 급증'
-                          
-                      msg += f"🔥 {name}\n ├ 현재가: {current_price:,.0f}원\n └ {status}\n\n"
-                  except: continue
+                      is_uptrend = (ma20 > ma60)
+                      is_pullback = (current_price >= ma20 * 0.98) and (current_price <= ma20 * 1.02)
+                      is_broken = (current_price < ma60)
+                      
+                      if is_uptrend and is_pullback:
+                          msg += f"🟢 [진입 타점] {name}\n ├ 현재가: {current_price:,.0f}원\n └ 상태: 20일선 눌림목 지지\n\n"
+                          signal_count += 1
+                      elif is_broken:
+                          # 이탈 종목은 너무 많을 수 있으므로 주요 종목만 간략히 표기 혹은 생략 가능
+                          pass
+                  except: 
+                      continue
+                      
+              if signal_count == 0:
+                  msg += "💤 현재 전 섹터에 20일선 눌림목(진입) 타점에 도달한 종목이 없습니다. 관망 중입니다."
+                  
               return msg
 
-          send_telegram_message(analyze_dynamic_trend())
+          send_telegram_message(analyze_all_sectors())
           EOF
-          python bot.py
+          python bot_v3.py
