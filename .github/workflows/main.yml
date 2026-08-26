@@ -1,27 +1,120 @@
-name: 텔레그램 통신 테스트 봇
+name: 스탁이지 V3.0 전 섹터 동적 스크리닝 봇
 
 on:
+  schedule:
+    # 깃허브 서버 정각 부하(밀림 현상)를 피하기 위해 분을 살짝 비틀어 세팅
+    - cron: '32 8 * * 1-5'  # 오전 08:32 (장 시작 전)
+      timezone: 'Asia/Seoul'
+    - cron: '2 15 * * 1-5'   # 오후 15:02 (장 마감 직후)
+      timezone: 'Asia/Seoul'
   workflow_dispatch:
 
 jobs:
-  test-bot:
+  run-dynamic-quant-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: 파이썬 세팅
+      - name: 파이썬 환경 세팅
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - name: 라이브러리 설치
-        run: pip install requests
-      - name: 테스트 메시지 발송
+          
+      - name: 필수 라이브러리 설치
+        run: pip install yfinance pandas requests beautifulsoup4 pytz
+        
+      - name: 전 섹터 동적 스크리닝 알고리즘 실행
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          python -c "
-          import requests, os
-          token = os.getenv('TELEGRAM_TOKEN')
-          chat_id = os.getenv('CHAT_ID')
-          url = f'https://api.telegram.org/bot{token}/sendMessage'
-          requests.post(url, json={'chat_id': chat_id, 'text': '🚨 [스탁이지 시스템] 텔레그램 연동 및 통신 테스트 성공 완료!'})
-          "
+          cat << 'EOF' > bot_v3.py
+          import yfinance as yf
+          import pandas as pd
+          import requests
+          from bs4 import BeautifulSoup
+          from datetime import datetime
+          import pytz
+          import os
+
+          TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+          CHAT_ID = os.getenv('CHAT_ID')
+
+          def send_telegram_message(message):
+              url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+              requests.post(url, json={'chat_id': CHAT_ID, 'text': message})
+
+          def get_dynamic_all_market_stocks():
+              target_stocks = {}
+              urls = [
+                  ("https://finance.naver.com/sise/sise_quant.naver?sosok=0", ".KS", 50),
+                  ("https://finance.naver.com/sise/sise_quant.naver?sosok=1", ".KQ", 50)
+              ]
+              
+              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+              
+              for url, suffix, limit in urls:
+                  try:
+                      res = requests.get(url, headers=headers, timeout=5)
+                      soup = BeautifulSoup(res.text, 'html.parser')
+                      count = 0
+                      
+                      for row in soup.select('table.type_2 tbody tr'):
+                          a_tag = row.select_one('a.tltle')
+                          if a_tag:
+                              name = a_tag.text.strip()
+                              code = a_tag['href'].split('code=')[-1]
+                              ticker = f"{code}{suffix}"
+                              target_stocks[ticker] = name
+                              count += 1
+                              if count >= limit:
+                                  break
+                  except Exception as e:
+                      print(f"크롤링 주의 ({suffix}): {e}")
+                      
+              if len(target_stocks) < 10:
+                  backup_pool = {
+                      "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", "278470.KS": "에이피알", 
+                      "257720.KQ": "실리콘투", "196170.KQ": "알테오젠", "042700.KS": "한미반도체",
+                      "277810.KQ": "레인보우로보틱스", "068270.KS": "셀트리온", "005380.KS": "현대차"
+                  }
+                  target_stocks.update(backup_pool)
+                  
+              return target_stocks
+
+          def analyze_all_sectors():
+              now = datetime.now(pytz.timezone('Asia/Seoul'))
+              stock_pool = get_dynamic_all_market_stocks()
+              msg = f"🌐 [스탁이지 V3.0] 전 섹터 동적 스크리닝 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n탐색 종목: 총 {len(stock_pool)}개\n\n"
+              
+              signal_count = 0
+              
+              for ticker, name in stock_pool.items():
+                  try:
+                      stock = yf.Ticker(ticker)
+                      df = stock.history(period="3mo")
+                      if df.empty or len(df) < 50: continue
+                      
+                      df['MA20'] = df['Close'].rolling(window=20).mean()
+                      df['MA60'] = df['Close'].rolling(window=60).mean()
+                      
+                      current_price = df.iloc[-1]['Close']
+                      ma20 = df.iloc[-1]['MA20']
+                      ma60 = df.iloc[-1]['MA60']
+                      
+                      is_uptrend = (ma20 > ma60)
+                      is_pullback = (current_price >= ma20 * 0.98) and (current_price <= ma20 * 1.02)
+                      is_broken = (current_price < ma60)
+                      
+                      if is_uptrend and is_pullback:
+                          msg += f"🟢 [진입 타점] {name}\n ├ 현재가: {current_price:,.0f}원\n └ 상태: 20일선 눌림목 지지\n\n"
+                          signal_count += 1
+                  except: 
+                      continue
+                      
+              if signal_count == 0:
+                  msg += "💤 현재 전 섹터에 20일선 눌림목(진입) 타점에 도달한 종목이 없습니다. 관망 중입니다."
+                  
+              return msg
+
+          send_telegram_message(analyze_all_sectors())
+          EOF
+          python bot_v3.py
