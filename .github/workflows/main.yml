@@ -1,11 +1,13 @@
-name: 스탁이지 V3.0 전 섹터 동적 스크리닝 봇
+name: 스탁이지 V3.1 전 섹터 동적 스크리닝 봇
 
 on:
   schedule:
-    # 깃허브 서버 정각 부하(밀림 현상)를 피하기 위해 분을 살짝 비틀어 세팅
-    - cron: '32 8 * * 1-5'  # 오전 08:32 (장 시작 전)
+    # 깃허브 서버 정각 부하(밀림 현상)를 피해 평일 하루 3번 정밀 스캔 타임라인 세팅
+    - cron: '32 8 * * 1-5'  # 오전 08:32 (장 시작 전 프리뷰)
       timezone: 'Asia/Seoul'
-    - cron: '2 15 * * 1-5'   # 오후 15:02 (장 마감 직후)
+    - cron: '2 13 * * 1-5'   # 오후 13:02 (장중 오후장 수급 점검)
+      timezone: 'Asia/Seoul'
+    - cron: '2 15 * * 1-5'   # 오후 15:02 (장 마감 직후 최종 리뷰)
       timezone: 'Asia/Seoul'
   workflow_dispatch:
 
@@ -83,7 +85,7 @@ jobs:
           def analyze_all_sectors():
               now = datetime.now(pytz.timezone('Asia/Seoul'))
               stock_pool = get_dynamic_all_market_stocks()
-              msg = f"🌐 [스탁이지 V3.0] 전 섹터 동적 스크리닝 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n탐색 종목: 총 {len(stock_pool)}개\n\n"
+              msg = f"🌐 [스탁이지 V3.1] 전 섹터 동적 스크리닝 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n탐색 종목: 총 {len(stock_pool)}개\n\n"
               
               signal_count = 0
               
@@ -102,7 +104,6 @@ jobs:
                       
                       is_uptrend = (ma20 > ma60)
                       is_pullback = (current_price >= ma20 * 0.98) and (current_price <= ma20 * 1.02)
-                      is_broken = (current_price < ma60)
                       
                       if is_uptrend and is_pullback:
                           msg += f"🟢 [진입 타점] {name}\n ├ 현재가: {current_price:,.0f}원\n └ 상태: 20일선 눌림목 지지\n\n"
