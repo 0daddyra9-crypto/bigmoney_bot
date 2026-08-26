@@ -1,18 +1,18 @@
-name: 스탁이지 V3.1 전 섹터 동적 스크리닝 봇
+name: 스탁이지 V4.2 3대 모델 실전 퀀트 봇
 
 on:
   schedule:
-    # 깃허브 서버 정각 부하(밀림 현상)를 피해 평일 하루 3번 정밀 스캔 타임라인 세팅
-    - cron: '32 8 * * 1-5'  # 오전 08:32 (장 시작 전 프리뷰)
+    # 하루 3번 타임라인 (장 시작 전, 장중 13시, 장 마감 직후) - 서버 밀림 방지 적용
+    - cron: '32 8 * * 1-5'  
       timezone: 'Asia/Seoul'
-    - cron: '2 13 * * 1-5'   # 오후 13:02 (장중 오후장 수급 점검)
+    - cron: '2 13 * * 1-5'   
       timezone: 'Asia/Seoul'
-    - cron: '2 15 * * 1-5'   # 오후 15:02 (장 마감 직후 최종 리뷰)
+    - cron: '2 15 * * 1-5'   
       timezone: 'Asia/Seoul'
   workflow_dispatch:
 
 jobs:
-  run-dynamic-quant-bot:
+  run-multi-quant-bot:
     runs-on: ubuntu-latest
     steps:
       - name: 파이썬 환경 세팅
@@ -23,12 +23,12 @@ jobs:
       - name: 필수 라이브러리 설치
         run: pip install yfinance pandas requests beautifulsoup4 pytz
         
-      - name: 전 섹터 동적 스크리닝 알고리즘 실행
+      - name: 6개월 누적 데이터 기반 진입/탈출 알고리즘 실행
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          cat << 'EOF' > bot_v3.py
+          cat << 'EOF' > bot_v4_2.py
           import yfinance as yf
           import pandas as pd
           import requests
@@ -50,7 +50,6 @@ jobs:
                   ("https://finance.naver.com/sise/sise_quant.naver?sosok=0", ".KS", 50),
                   ("https://finance.naver.com/sise/sise_quant.naver?sosok=1", ".KQ", 50)
               ]
-              
               headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
               
               for url, suffix, limit in urls:
@@ -58,64 +57,91 @@ jobs:
                       res = requests.get(url, headers=headers, timeout=5)
                       soup = BeautifulSoup(res.text, 'html.parser')
                       count = 0
-                      
                       for row in soup.select('table.type_2 tbody tr'):
                           a_tag = row.select_one('a.tltle')
                           if a_tag:
                               name = a_tag.text.strip()
                               code = a_tag['href'].split('code=')[-1]
-                              ticker = f"{code}{suffix}"
-                              target_stocks[ticker] = name
+                              target_stocks[f"{code}{suffix}"] = name
                               count += 1
-                              if count >= limit:
-                                  break
-                  except Exception as e:
-                      print(f"크롤링 주의 ({suffix}): {e}")
-                      
+                              if count >= limit: break
+                  except: pass
+                  
               if len(target_stocks) < 10:
-                  backup_pool = {
+                  target_stocks = {
                       "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", "278470.KS": "에이피알", 
                       "257720.KQ": "실리콘투", "196170.KQ": "알테오젠", "042700.KS": "한미반도체",
-                      "277810.KQ": "레인보우로보틱스", "068270.KS": "셀트리온", "005380.KS": "현대차"
+                      "277810.KQ": "레인보우로보틱스", "068270.KS": "셀트리온"
                   }
-                  target_stocks.update(backup_pool)
-                  
               return target_stocks
 
-          def analyze_all_sectors():
+          def analyze_multi_models():
               now = datetime.now(pytz.timezone('Asia/Seoul'))
               stock_pool = get_dynamic_all_market_stocks()
-              msg = f"🌐 [스탁이지 V3.1] 전 섹터 동적 스크리닝 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n탐색 종목: 총 {len(stock_pool)}개\n\n"
+              msg = f"🚀 [스탁이지 V4.2 실전 퀀트] 진입 및 탈출 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n스캔 종목: 총 {len(stock_pool)}개\n\n"
               
-              signal_count = 0
+              entry_signals = []
+              exit_signals = []
               
               for ticker, name in stock_pool.items():
                   try:
+                      # 6개월(약 120거래일) 누적 일봉 데이터 호출
                       stock = yf.Ticker(ticker)
-                      df = stock.history(period="3mo")
-                      if df.empty or len(df) < 50: continue
+                      df = stock.history(period="6mo")
+                      if df.empty or len(df) < 100: continue
                       
+                      # 이평선 및 거래량 이동평균 세팅
                       df['MA20'] = df['Close'].rolling(window=20).mean()
-                      df['MA60'] = df['Close'].rolling(window=60).mean()
+                      df['MA50'] = df['Close'].rolling(window=50).mean()
+                      df['MA150'] = df['Close'].rolling(window=150).mean() if len(df) >= 150 else df['MA50']
+                      df['MA200'] = df['Close'].rolling(window=200).mean() if len(df) >= 200 else df['MA50']
+                      df['Vol_MA20'] = df['Volume'].rolling(window=20).mean()
                       
-                      current_price = df.iloc[-1]['Close']
+                      cur_price = df.iloc[-1]['Close']
+                      prev_price = df.iloc[-2]['Close']
                       ma20 = df.iloc[-1]['MA20']
-                      ma60 = df.iloc[-1]['MA60']
+                      ma50 = df.iloc[-1]['MA50']
+                      ma150 = df.iloc[-1]['MA150']
+                      ma200 = df.iloc[-1]['MA200']
+                      cur_vol = df.iloc[-1]['Volume']
+                      avg_vol = df.iloc[-1]['Vol_MA20']
                       
-                      is_uptrend = (ma20 > ma60)
-                      is_pullback = (current_price >= ma20 * 0.98) and (current_price <= ma20 * 1.02)
+                      # 🟢 [진입 로직] 3대 모델 검증
+                      is_minervini = (cur_price > ma150) and (ma150 > ma200) and (cur_price >= ma50 * 0.97) and (cur_price <= ma50 * 1.03)
+                      is_pullback = (ma20 > ma50) and (cur_price >= ma20 * 0.98) and (cur_price <= ma20 * 1.02)
+                      is_vol_breakout = (cur_vol >= avg_vol * 2.5) and (cur_price > prev_price)
                       
-                      if is_uptrend and is_pullback:
-                          msg += f"🟢 [진입 타점] {name}\n ├ 현재가: {current_price:,.0f}원\n └ 상태: 20일선 눌림목 지지\n\n"
-                          signal_count += 1
+                      matched = []
+                      if is_minervini: matched.append("미네르비니")
+                      if is_pullback: matched.append("20일선 눌림")
+                      if is_vol_breakout: matched.append("수급 폭발")
+                      
+                      if matched:
+                          entry_signals.append(f"🟢 **{name}** ({cur_price:,.0f}원)\n └ 모델: {', '.join(matched)}")
+                          
+                      # 🔴 [탈출 로직] 생명선(50일선) 이탈 감지
+                      # 어제는 50일선 위에 있었으나, 오늘 종가(현재가)가 50일선을 깨고 내려간 경우
+                      if (prev_price >= df.iloc[-2]['MA50']) and (cur_price < ma50):
+                          exit_signals.append(f"🔴 **{name}** ({cur_price:,.0f}원)\n └ 경고: 중기 생명선(50일선) 하향 이탈")
+                          
                   except: 
                       continue
                       
-              if signal_count == 0:
-                  msg += "💤 현재 전 섹터에 20일선 눌림목(진입) 타점에 도달한 종목이 없습니다. 관망 중입니다."
+              # 리포트 조립
+              msg += "🎯 [오늘의 진입(Entry) 타점]\n"
+              if entry_signals:
+                  msg += "\n".join(entry_signals) + "\n\n"
+              else:
+                  msg += " - 현재 진입 조건을 충족한 주도주가 없습니다.\n\n"
+                  
+              msg += "🚨 [오늘의 탈출(Exit) 경고]\n"
+              if exit_signals:
+                  msg += "\n".join(exit_signals) + "\n"
+              else:
+                  msg += " - 현재 생명선을 이탈한 보유/관심 종목이 없습니다.\n"
                   
               return msg
 
-          send_telegram_message(analyze_all_sectors())
+          send_telegram_message(analyze_multi_models())
           EOF
-          python bot_v3.py
+          python bot_v4_2.py
