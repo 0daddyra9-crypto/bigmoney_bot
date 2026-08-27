@@ -2,13 +2,12 @@ name: 스탁이지 V4.2 3대 모델 실전 퀀트 봇
 
 on:
   schedule:
-    # 하루 3번 타임라인 (장 시작 전, 장중 13시, 장 마감 직후) - 서버 밀림 방지 적용
-    - cron: '32 8 * * 1-5'  
-      timezone: 'Asia/Seoul'
-    - cron: '2 13 * * 1-5'   
-      timezone: 'Asia/Seoul'
-    - cron: '2 15 * * 1-5'   
-      timezone: 'Asia/Seoul'
+    # 1. 한국 시간(KST) 오전 08:32 = UTC 기준 전날 23:32 (일~목)
+    - cron: '32 23 * * 0-4'
+    # 2. 한국 시간(KST) 오후 13:02 = UTC 기준 04:02 (월~금)
+    - cron: '2 4 * * 1-5'
+    # 3. 한국 시간(KST) 오후 15:02 = UTC 기준 06:02 (월~금)
+    - cron: '2 6 * * 1-5'
   workflow_dispatch:
 
 jobs:
