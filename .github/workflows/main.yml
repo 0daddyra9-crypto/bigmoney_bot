@@ -1,4 +1,4 @@
-name: 스탁이지 V4.3 3대 모델 실전 퀀트 봇
+name: 스탁이지 V4.4 3대 모델 실전 퀀트 봇
 
 on:
   schedule:
@@ -19,15 +19,15 @@ jobs:
         with:
           python-version: '3.10'
           
-      - name: 필수 라이브러리 설치 (FinanceDataReader 추가)
+      - name: 필수 라이브러리 설치 (FinanceDataReader 포함)
         run: pip install yfinance pandas requests finance-datareader pytz
         
-      - name: V4.3 공식 데이터 기반 알고리즘 실행
+      - name: V4.4 정밀 필터링 알고리즘 실행
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          cat << 'EOF' > bot_v4_3.py
+          cat << 'EOF' > bot_v4_4.py
           import yfinance as yf
           import FinanceDataReader as fdr
           import pandas as pd
@@ -44,44 +44,32 @@ jobs:
               requests.post(url, json={'chat_id': CHAT_ID, 'text': message})
 
           def get_top_krx_stocks(limit=100):
-              # 한국거래소(KRX) 전체 종목 데이터를 불러와 시가총액 순으로 정렬
               krx = fdr.StockListing('KRX')
               krx = krx.sort_values('Marcap', ascending=False).head(limit)
-              
               target_stocks = {}
               for idx, row in krx.iterrows():
                   code = row['Code']
-                  name = row['Name']
                   market = row['Market']
-                  
-                  # yfinance에서 인식할 수 있도록 시장별 티커(Suffix) 매핑
-                  if market == 'KOSPI':
-                      ticker = f"{code}.KS"
-                  elif market == 'KOSDAQ':
-                      ticker = f"{code}.KQ"
-                  else:
-                      continue
-                      
-                  target_stocks[ticker] = name
-                  
+                  if market == 'KOSPI': ticker = f"{code}.KS"
+                  elif market == 'KOSDAQ': ticker = f"{code}.KQ"
+                  else: continue
+                  target_stocks[ticker] = row['Name']
               return target_stocks
 
           def analyze_multi_models():
               now = datetime.now(pytz.timezone('Asia/Seoul'))
-              stock_pool = get_top_krx_stocks(100) # 시가총액 상위 100개 추출
-              msg = f"🚀 [스탁이지 V4.3 실전 퀀트] 진입 및 탈출 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n스캔 종목: 총 {len(stock_pool)}개\n\n"
+              stock_pool = get_top_krx_stocks(100)
+              msg = f"🚀 [스탁이지 V4.4 실전 퀀트] 진입 및 탈출 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n스캔 종목: 총 {len(stock_pool)}개\n\n"
               
               entry_signals = []
               exit_signals = []
               
               for ticker, name in stock_pool.items():
                   try:
-                      # 6개월(약 120거래일) 누적 일봉 데이터 호출
                       stock = yf.Ticker(ticker)
                       df = stock.history(period="6mo")
                       if df.empty or len(df) < 100: continue
                       
-                      # 이평선 및 거래량 이동평균 세팅
                       df['MA20'] = df['Close'].rolling(window=20).mean()
                       df['MA50'] = df['Close'].rolling(window=50).mean()
                       df['MA150'] = df['Close'].rolling(window=150).mean() if len(df) >= 150 else df['MA50']
@@ -97,27 +85,29 @@ jobs:
                       cur_vol = df.iloc[-1]['Volume']
                       avg_vol = df.iloc[-1]['Vol_MA20']
                       
-                      # 🟢 [진입 로직] 3대 모델 검증
-                      is_minervini = (cur_price > ma150) and (ma150 > ma200) and (cur_price >= ma50 * 0.97) and (cur_price <= ma50 * 1.03)
-                      is_pullback = (ma20 > ma50) and (cur_price >= ma20 * 0.98) and (cur_price <= ma20 * 1.02)
-                      is_vol_breakout = (cur_vol >= avg_vol * 2.5) and (cur_price > prev_price)
+                      # 🔴 [탈출 로직] 50일선 이탈 감지
+                      is_exit = (prev_price >= df.iloc[-2]['MA50']) and (cur_price < ma50)
                       
-                      matched = []
-                      if is_minervini: matched.append("미네르비니")
-                      if is_pullback: matched.append("20일선 눌림")
-                      if is_vol_breakout: matched.append("수급 폭발")
-                      
-                      if matched:
-                          entry_signals.append(f"🟢 **{name}** ({cur_price:,.0f}원)\n └ 모델: {', '.join(matched)}")
-                          
-                      # 🔴 [탈출 로직] 생명선(50일선) 이탈 감지
-                      if (prev_price >= df.iloc[-2]['MA50']) and (cur_price < ma50):
+                      if is_exit:
                           exit_signals.append(f"🔴 **{name}** ({cur_price:,.0f}원)\n └ 경고: 중기 생명선(50일선) 하향 이탈")
+                      
+                      # 🟢 [진입 로직] 상호 배제 원칙: 현재가가 50일선 이상일 때만 진입 신호 발생 (방어선 구축)
+                      if cur_price >= ma50:
+                          is_minervini = (cur_price > ma150) and (ma150 > ma200) and (cur_price >= ma50 * 0.97) and (cur_price <= ma50 * 1.03)
+                          is_pullback = (ma20 > ma50) and (cur_price >= ma20 * 0.98) and (cur_price <= ma20 * 1.02)
+                          is_vol_breakout = (cur_vol >= avg_vol * 2.5) and (cur_price > prev_price)
                           
+                          matched = []
+                          if is_minervini: matched.append("미네르비니")
+                          if is_pullback: matched.append("20일선 눌림")
+                          if is_vol_breakout: matched.append("수급 폭발")
+                          
+                          if matched:
+                              entry_signals.append(f"🟢 **{name}** ({cur_price:,.0f}원)\n └ 모델: {', '.join(matched)}")
+                              
                   except: 
                       continue
                       
-              # 리포트 조립
               msg += "🎯 [오늘의 진입(Entry) 타점]\n"
               if entry_signals:
                   msg += "\n".join(entry_signals) + "\n\n"
@@ -134,5 +124,5 @@ jobs:
 
           send_telegram_message(analyze_multi_models())
           EOF
-          python bot_v4_3.py
+          python bot_v4_4.py
           
