@@ -1,12 +1,12 @@
-name: 스탁이지 V4.2 3대 모델 실전 퀀트 봇
+name: 스탁이지 V4.3 3대 모델 실전 퀀트 봇
 
 on:
   schedule:
-    # 1. 한국 시간(KST) 오전 08:32 = UTC 기준 전날 23:32 (일~목)
+    # 한국 시간(KST) 오전 08:32 = UTC 기준 전날 23:32 (일~목)
     - cron: '32 23 * * 0-4'
-    # 2. 한국 시간(KST) 오후 13:02 = UTC 기준 04:02 (월~금)
+    # 한국 시간(KST) 오후 13:02 = UTC 기준 04:02 (월~금)
     - cron: '2 4 * * 1-5'
-    # 3. 한국 시간(KST) 오후 15:02 = UTC 기준 06:02 (월~금)
+    # 한국 시간(KST) 오후 15:02 = UTC 기준 06:02 (월~금)
     - cron: '2 6 * * 1-5'
   workflow_dispatch:
 
@@ -19,19 +19,19 @@ jobs:
         with:
           python-version: '3.10'
           
-      - name: 필수 라이브러리 설치
-        run: pip install yfinance pandas requests beautifulsoup4 pytz
+      - name: 필수 라이브러리 설치 (FinanceDataReader 추가)
+        run: pip install yfinance pandas requests finance-datareader pytz
         
-      - name: 6개월 누적 데이터 기반 진입/탈출 알고리즘 실행
+      - name: V4.3 공식 데이터 기반 알고리즘 실행
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          cat << 'EOF' > bot_v4_2.py
+          cat << 'EOF' > bot_v4_3.py
           import yfinance as yf
+          import FinanceDataReader as fdr
           import pandas as pd
           import requests
-          from bs4 import BeautifulSoup
           from datetime import datetime
           import pytz
           import os
@@ -43,41 +43,33 @@ jobs:
               url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
               requests.post(url, json={'chat_id': CHAT_ID, 'text': message})
 
-          def get_dynamic_all_market_stocks():
-              target_stocks = {}
-              urls = [
-                  ("https://finance.naver.com/sise/sise_quant.naver?sosok=0", ".KS", 50),
-                  ("https://finance.naver.com/sise/sise_quant.naver?sosok=1", ".KQ", 50)
-              ]
-              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+          def get_top_krx_stocks(limit=100):
+              # 한국거래소(KRX) 전체 종목 데이터를 불러와 시가총액 순으로 정렬
+              krx = fdr.StockListing('KRX')
+              krx = krx.sort_values('Marcap', ascending=False).head(limit)
               
-              for url, suffix, limit in urls:
-                  try:
-                      res = requests.get(url, headers=headers, timeout=5)
-                      soup = BeautifulSoup(res.text, 'html.parser')
-                      count = 0
-                      for row in soup.select('table.type_2 tbody tr'):
-                          a_tag = row.select_one('a.tltle')
-                          if a_tag:
-                              name = a_tag.text.strip()
-                              code = a_tag['href'].split('code=')[-1]
-                              target_stocks[f"{code}{suffix}"] = name
-                              count += 1
-                              if count >= limit: break
-                  except: pass
+              target_stocks = {}
+              for idx, row in krx.iterrows():
+                  code = row['Code']
+                  name = row['Name']
+                  market = row['Market']
                   
-              if len(target_stocks) < 10:
-                  target_stocks = {
-                      "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", "278470.KS": "에이피알", 
-                      "257720.KQ": "실리콘투", "196170.KQ": "알테오젠", "042700.KS": "한미반도체",
-                      "277810.KQ": "레인보우로보틱스", "068270.KS": "셀트리온"
-                  }
+                  # yfinance에서 인식할 수 있도록 시장별 티커(Suffix) 매핑
+                  if market == 'KOSPI':
+                      ticker = f"{code}.KS"
+                  elif market == 'KOSDAQ':
+                      ticker = f"{code}.KQ"
+                  else:
+                      continue
+                      
+                  target_stocks[ticker] = name
+                  
               return target_stocks
 
           def analyze_multi_models():
               now = datetime.now(pytz.timezone('Asia/Seoul'))
-              stock_pool = get_dynamic_all_market_stocks()
-              msg = f"🚀 [스탁이지 V4.2 실전 퀀트] 진입 및 탈출 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n스캔 종목: 총 {len(stock_pool)}개\n\n"
+              stock_pool = get_top_krx_stocks(100) # 시가총액 상위 100개 추출
+              msg = f"🚀 [스탁이지 V4.3 실전 퀀트] 진입 및 탈출 리포트\n⏰ {now.strftime('%Y-%m-%d %H:%M')}\n스캔 종목: 총 {len(stock_pool)}개\n\n"
               
               entry_signals = []
               exit_signals = []
@@ -119,7 +111,6 @@ jobs:
                           entry_signals.append(f"🟢 **{name}** ({cur_price:,.0f}원)\n └ 모델: {', '.join(matched)}")
                           
                       # 🔴 [탈출 로직] 생명선(50일선) 이탈 감지
-                      # 어제는 50일선 위에 있었으나, 오늘 종가(현재가)가 50일선을 깨고 내려간 경우
                       if (prev_price >= df.iloc[-2]['MA50']) and (cur_price < ma50):
                           exit_signals.append(f"🔴 **{name}** ({cur_price:,.0f}원)\n └ 경고: 중기 생명선(50일선) 하향 이탈")
                           
@@ -143,5 +134,5 @@ jobs:
 
           send_telegram_message(analyze_multi_models())
           EOF
-          python bot_v4_2.py
-
+          python bot_v4_3.py
+          
